@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Lua MAX Obfuscator</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    background:#050505;
+    color:#fff;
+    font-family:Arial,sans-serif
+}
+
+.box{
+    width:100%;
+    max-width:950px;
+    background:#0d0d0d;
+    border:1px solid #252525;
+    border-radius:14px;
+    padding:18px;
+    box-shadow:0 0 40px #000
+}
+
+h1{
+    text-align:center;
+    margin:0 0 15px;
+    font-size:23px
+}
+
+textarea{
+    width:100%;
+    height:290px;
+    resize:vertical;
+    background:#050505;
+    color:#ddd;
+    border:1px solid #292929;
+    border-radius:10px;
+    padding:14px;
+    outline:none;
+    font:13px Consolas,monospace
+}
+
+textarea:focus{
+    border-color:#555
+}
+
+.buttons{
+    display:flex;
+    gap:10px;
+    margin:10px 0
+}
+
+button{
+    flex:1;
+    padding:13px;
+    border:0;
+    border-radius:9px;
+    cursor:pointer;
+    font-weight:bold;
+    background:#fff;
+    color:#000
+}
+
+button:hover{
+    opacity:.85
+}
+
+#copy,#clear{
+    background:#181818;
+    color:#fff;
+    border:1px solid #303030
+}
+
+#status{
+    text-align:center;
+    margin-top:9px;
+    color:#777;
+    font-size:12px
+}
+</style>
+</head>
+
+<body>
+
+<div class="box">
+
+<h1>Lua MAX Obfuscator</h1>
+
+<textarea id="input"
+placeholder="Pega tu código Lua aquí..."></textarea>
+
+<div class="buttons">
+    <button onclick="obfuscate()">Ofuscar MAX</button>
+    <button id="copy" onclick="copyCode()">Copiar</button>
+    <button id="clear" onclick="clearAll()">Limpiar</button>
+</div>
+
+<textarea id="output"
+placeholder="Resultado..."
+readonly></textarea>
+
+<div id="status">Listo</div>
+
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================
+   UTILIDADES
+========================================================= */
+
+function rand(min,max){
+    return Math.floor(Math.random()*(max-min+1))+min;
+}
+
+/*
+ * Convierte un carácter Unicode a sus bytes UTF-8.
+ * No usamos TextEncoder para que el algoritmo sea
+ * independiente del entorno.
+ */
+function utf8Bytes(str){
+
+    const bytes=[];
+
+    for(let i=0;i<str.length;i++){
+
+        let c=str.charCodeAt(i);
+
+        if(
+            c>=0xD800 &&
+            c<=0xDBFF &&
+            i+1<str.length
+        ){
+            const d=str.charCodeAt(++i);
+
+            c=
+                0x10000+
+                ((c-0xD800)<<10)+
+                (d-0xDC00);
+        }
+
+        if(c<=0x7F){
+
+            bytes.push(c);
+
+        }else if(c<=0x7FF){
+
+            bytes.push(
+                0xC0|(c>>6),
+                0x80|(c&0x3F)
+            );
+
+        }else if(c<=0xFFFF){
+
+            bytes.push(
+                0xE0|(c>>12),
+                0x80|((c>>6)&0x3F),
+                0x80|(c&0x3F)
+            );
+
+        }else{
+
+            bytes.push(
+                0xF0|(c>>18),
+                0x80|((c>>12)&0x3F),
+                0x80|((c>>6)&0x3F),
+                0x80|(c&0x3F)
+            );
+        }
+    }
+
+    return bytes;
+}
+
+/* =========================================================
+   DECODIFICAR ESCAPES DE LUA
+========================================================= */
+
+function readLuaEscape(src,pos){
+
+    if(pos>=src.length)
+        return null;
+
+    const c=src[pos];
+
+    const simple={
+        "a":"\x07",
+        "b":"\b",
+        "f":"\f",
+        "n":"\n",
+        "r":"\r",
+        "t":"\t",
+        "v":"\v",
+        "\\":"\\",
+        "\"":"\"",
+        "'":"'"
+    };
+
+    if(simple[c]!==undefined){
+
+        return {
+            value:simple[c],
+            next:pos+1
+        };
+    }
+
+    /*
+     * Escape decimal:
+     * \123
+     */
+    if(/[0-9]/.test(c)){
+
+        let digits="";
+
+        let p=pos;
+
+        for(let i=0;i<3 && p<src.length;i++,p++){
+
+            if(!/[0-9]/.test(src[p]))
+                break;
+
+            digits+=src[p];
+        }
+
+        const n=parseInt(digits,10);
+
+        if(n>=0 && n<=255){
+
+            return {
+                value:String.fromCharCode(n),
+                next:p
+            };
+        }
+    }
+
+    /*
+     * Escape hexadecimal:
+     * \xFF
+     */
+    if(c==="x" && pos+2<src.length){
+
+        const hex=
+            src.slice(pos+1,pos+3);
+
+        if(/^[0-9a-fA-F]{2}$/.test(hex)){
+
+            return {
+                value:String.fromCharCode(
+                    parseInt(hex,16)
+                ),
+                next:pos+3
+            };
+        }
+    }
+
+    /*
+     * \z elimina espacios posteriores.
+     */
+    if(c==="z"){
+
+        let p=pos+1;
+
+        while(
+            p<src.length &&
+            /\s/.test(src[p])
+        ){
+            p++;
+        }
+
+        return {
+            value:"",
+            next:p
+        };
+    }
+
+    /*
+     * Escape de salto de línea.
+     */
+    if(c==="\n"){
+
+        return {
+            value:"\n",
+            next:pos+1
+        };
+    }
+
+    if(c==="\r"){
+
+        if(src[pos+1]==="\n"){
+
+            return {
+                value:"\n",
+                next:pos+2
+            };
+        }
+
+        return {
+            value:"\n",
+            next:pos+1
+        };
+    }
+
+    /*
+     * Escape desconocido:
+     * Lua conserva el carácter escapado.
+     */
+    return {
+        value:c,
+        next:pos+1
+    };
+}
+
+/* =========================================================
+   LEER STRING CORTO DE LUA
+========================================================= */
+
+function readShortString(src,start){
+
+    const quote=src[start];
+
+    let value="";
+    let p=start+1;
+
+    while(p<src.length){
+
+        const c=src[p];
+
+        if(c===quote){
+
+            return {
+                value:value,
+                end:p+1
+            };
+        }
+
+        if(c==="\\"){
+
+            const esc=
+                readLuaEscape(src,p+1);
+
+            if(!esc)
+                return null;
+
+            value+=esc.value;
+            p=esc.next;
+
+            continue;
+        }
+
+        value+=c;
+        p++;
+    }
+
+    /*
+     * String sin cerrar:
+     * NO modificar nada.
+     */
+    return null;
+}
+
+/* =========================================================
+   LONG STRING LUA
+   Soporta [=[...]=], [==[...]==], etc.
+========================================================= */
+
+function readLongString(src,start){
+
+    if(src[start]!=="[")
+        return null;
+
+    let p=start+1;
+    let level=0;
+
+    while(src[p]==="="){
+
+        level++;
+        p++;
+    }
+
+    if(src[p]!=="[")
+        return null;
+
+    const contentStart=p+1;
+
+    const close=
+        "]"+
+        "=".repeat(level)+
+        "]";
+
+    const end=
+        src.indexOf(close,contentStart);
+
+    if(end===-1)
+        return null;
+
+    return {
+        value:src.slice(
+            contentStart,
+            end
+        ),
+        end:end+close.length
+    };
+}
+
+/* =========================================================
+   CREAR string.char(...)
+========================================================= */
+
+function makeCharExpression(value){
+
+    const bytes=utf8Bytes(value);
+
+    if(bytes.length===0){
+
+        return 'string.char()';
+    }
+
+    /*
+     * Una máscara matemática que no requiere
+     * operadores bitwise de Lua.
+     *
+     * (byte + add) - add
+     *
+     * Es deliberadamente compatible con Lua antiguo.
+     */
+    const parts=[];
+
+    /*
+     * Fragmentamos para que no aparezca una URL
+     * completa en una sola expresión.
+     */
+    const chunkSize=rand(3,7);
+
+    for(
+        let start=0;
+        start<bytes.length;
+        start+=chunkSize
+    ){
+
+        const chunk=
+            bytes.slice(
+                start,
+                start+chunkSize
+            );
+
+        const expr=chunk.map(function(byte){
+
+            const add=rand(11,200);
+
+            const encoded=byte+add;
+
+            return `((${encoded})-${add})`;
+        });
+
+        parts.push(
+            "string.char("+
+            expr.join(",")+
+            ")"
+        );
+    }
+
+    return parts.join("..");
+}
+
+/* =========================================================
+   PROCESAR CÓDIGO
+========================================================= */
+
+function obfuscateStrings(code){
+
+    let out="";
+    let i=0;
+
+    while(i<code.length){
+
+        /*
+         * Comentario de línea.
+         * Se copia exactamente.
+         */
+        if(
+            code[i]==="-" &&
+            code[i+1]==="-"
+        ){
+
+            /*
+             * Si es comentario largo:
+             * --[=[ ... ]=]
+             */
+            const long=
+                readLongString(
+                    code,
+                    i+2
+                );
+
+            if(long){
+
+                /*
+                 * Aunque sea comentario, no se toca.
+                 */
+                out+=code.slice(
+                    i,
+                    long.end+2
+                );
+
+                i=long.end+2;
+
+                continue;
+            }
+
+            const start=i;
+
+            i+=2;
+
+            while(
+                i<code.length &&
+                code[i]!=="\n" &&
+                code[i]!=="\r"
+            ){
+                i++;
+            }
+
+            out+=code.slice(start,i);
+
+            continue;
+        }
+
+        /*
+         * String normal.
+         */
+        if(
+            code[i]==="\"" ||
+            code[i]==="'"
+        ){
+
+            const parsed=
+                readShortString(
+                    code,
+                    i
+                );
+
+            /*
+             * Si el parser no pudo encontrar
+             * el cierre, copiamos el resto intacto.
+             */
+            if(!parsed){
+
+                out+=code.slice(i);
+                break;
+            }
+
+            out+=
+                makeCharExpression(
+                    parsed.value
+                );
+
+            i=parsed.end;
+
+            continue;
+        }
+
+        /*
+         * Long string.
+         */
+        if(code[i]==="["){
+
+            const parsed=
+                readLongString(
+                    code,
+                    i
+                );
+
+            if(parsed){
+
+                out+=
+                    makeCharExpression(
+                        parsed.value
+                    );
+
+                i=parsed.end;
+
+                continue;
+            }
+        }
+
+        out+=code[i];
+        i++;
+    }
+
+    return out;
+}
+
+/* =========================================================
+   OFUSCAR
+========================================================= */
+
+function obfuscate(){
+
+    const input=
+        document.getElementById("input").value;
+
+    const output=
+        document.getElementById("output");
+
+    const status=
+        document.getElementById("status");
+
+    if(!input.trim()){
+
+        status.textContent=
+            "Pega código Lua primero.";
+
+        return;
+    }
+
+    try{
+
+        /*
+         * IMPORTANTE:
+         * no modificamos variables,
+         * números, operadores,
+         * comentarios ni estructura.
+         */
+        const result=
+            obfuscateStrings(input);
+
+        output.value=result;
+
+        status.textContent=
+            "Ofuscación MAX completada.";
+
+    }catch(error){
+
+        console.error(error);
+
+        /*
+         * Si algo falla, NO entregamos código
+         * potencialmente roto.
+         */
+        output.value=input;
+
+        status.textContent=
+            "No se pudo procesar: se conservó el original.";
+    }
+}
+
+/* =========================================================
+   COPIAR
+========================================================= */
+
+async function copyCode(){
+
+    const output=
+        document.getElementById("output");
+
+    const status=
+        document.getElementById("status");
+
+    if(!output.value){
+
+        status.textContent=
+            "No hay código para copiar.";
+
+        return;
+    }
+
+    try{
+
+        await navigator.clipboard.writeText(
+            output.value
+        );
+
+        status.textContent="Copiado.";
+
+    }catch(error){
+
+        output.focus();
+        output.select();
+
+        document.execCommand("copy");
+
+        status.textContent="Copiado.";
+    }
+}
+
+/* =========================================================
+   LIMPIAR
+========================================================= */
+
+function clearAll(){
+
+    document.getElementById("input").value="";
+    document.getElementById("output").value="";
+
+    document.getElementById("status").textContent=
+        "Listo";
+}
+</script>
+
+</body>
+  </html>

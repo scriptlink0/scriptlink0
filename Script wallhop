@@ -1,0 +1,472 @@
+-- [[ WALLHOP INTELIGENTE - VERSIÓN LIMPIA ]]
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace  = game:GetService("Workspace")
+local LocalPlayer = Players.LocalPlayer
+local UserInput  = game:GetService("UserInputService")
+
+if not LocalPlayer then
+	Players.PlayerAdded:Wait()
+	LocalPlayer = Players.LocalPlayer
+end
+
+-- CONFIG
+getgenv().Wallhop_Config = getgenv().Wallhop_Config or {
+	wallCheckDistance = 3.0,
+	jumpCooldown      = 0.35,
+	autoWallHop       = false,
+
+	onlyVisibleParts  = true,
+	minTransparency   = 0.9,
+	requireVertical   = false,
+
+	sampleBand        = 1.2,
+	sampleCount       = 11,
+	seamTolerance     = 0.7,
+	directions        = 16,
+
+	preserveVelocity  = true,
+	velocityBoost     = 1.0,
+	touchDistance     = 2.0,
+}
+
+-- ESTADOS
+local isEnabled, isMinimized = false, false
+local running = true
+local character, humanoid, hrp
+local lastJumpTime = 0
+local connections = {}
+
+local function track(c)
+	table.insert(connections, c)
+	return c
+end
+
+-- ============================================================
+-- RAYCASTS
+-- ============================================================
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function updateRayFilter()
+	local list = {}
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character then
+			table.insert(list, p.Character)
+		end
+	end
+
+	if LocalPlayer.Character then
+		table.insert(list, LocalPlayer.Character)
+	end
+
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			local owner = obj:FindFirstAncestorOfClass("Accessory")
+				or obj:FindFirstAncestorOfClass("Tool")
+				or obj:FindFirstAncestorOfClass("Model")
+			if owner then
+				local hum = owner:FindFirstChildOfClass("Humanoid")
+				if hum and hum:GetPlayer() == LocalPlayer then
+					table.insert(list, obj)
+				end
+			end
+		end
+	end
+
+	rayParams.FilterDescendantsInstances = list
+end
+pcall(updateRayFilter)
+
+track(Players.PlayerAdded:Connect(function(p)
+	pcall(updateRayFilter)
+	p.CharacterAdded:Connect(function() pcall(updateRayFilter) end)
+end))
+
+track(Players.PlayerRemoving:Connect(function()
+	task.wait(0.1)
+	pcall(updateRayFilter)
+end))
+
+for _, p in ipairs(Players:GetPlayers()) do
+	track(p.CharacterAdded:Connect(function() pcall(updateRayFilter) end))
+end
+
+local RAY_DIRS = {}
+for i = 0, getgenv().Wallhop_Config.directions - 1 do
+	local a = (i / getgenv().Wallhop_Config.directions) * math.pi * 2
+	table.insert(RAY_DIRS, Vector3.new(math.cos(a), 0, math.sin(a)))
+end
+
+local function getFeetY()
+	if not hrp then return 0 end
+	return hrp.Position.Y - hrp.Size.Y * 0.5 - (humanoid and humanoid.HipHeight or 0)
+end
+
+-- ============================================================
+-- FILTRO DE SUPERFICIES
+-- ============================================================
+local IGNORED_CLASSES = {
+	Accessory = true, Seat = true, VehicleSeat = true,
+	Attachment = true, Decal = true, Texture = true,
+	ParticleEmitter = true, Trail = true, Beam = true,
+	SelectionBox = true, Highlight = true, ForceField = true,
+	Sound = true, BillboardGui = true, SurfaceGui = true,
+}
+
+local function isSolidSurface(part)
+	if not part or not part:IsA("BasePart") then return false end
+	if not part.CanCollide then return false end
+	if IGNORED_CLASSES[part.ClassName] then return false end
+
+	local ancestor = part:FindFirstAncestorOfClass("Model")
+	if ancestor and ancestor:FindFirstChildOfClass("Humanoid") then return false end
+	if part:FindFirstAncestorOfClass("Tool") then return false end
+	if part:FindFirstAncestorOfClass("Accessory") then return false end
+
+	if getgenv().Wallhop_Config.onlyVisibleParts then
+		if part.Transparency >= getgenv().Wallhop_Config.minTransparency then return false end
+		if part.LocalTransparencyModifier >= getgenv().Wallhop_Config.minTransparency then return false end
+	end
+
+	return true
+end
+
+local function isWallHit(result)
+	if not result or not result.Instance then return false end
+	if not isSolidSurface(result.Instance) then return false end
+
+	if getgenv().Wallhop_Config.requireVertical then
+		if math.abs(result.Normal.Y) >= 0.35 then return false end
+	end
+
+	if result.Normal.Y > 0.85 then
+		local feetY = getFeetY()
+		if math.abs(result.Position.Y - feetY) < 0.5 then return false end
+	end
+
+	return true
+end
+
+-- ============================================================
+-- DETECCIÓN DE SEAM
+-- ============================================================
+local function findSeam()
+	if not hrp then return false end
+
+	local origin = hrp.Position
+	local feetY  = getFeetY()
+	local halfBand = getgenv().Wallhop_Config.sampleBand
+	local n        = getgenv().Wallhop_Config.sampleCount
+	local step     = (halfBand * 2) / (n - 1)
+	local touchDist = getgenv().Wallhop_Config.touchDistance
+
+	for _, dir in ipairs(RAY_DIRS) do
+		local prevPart, prevY = nil, nil
+		local closestHit = math.huge
+
+		for k = 1, n do
+			local y = feetY - halfBand + step * (k - 1)
+			local o = Vector3.new(origin.X, y, origin.Z)
+			local r = Workspace:Raycast(o, dir * getgenv().Wallhop_Config.wallCheckDistance, rayParams)
+
+			if isWallHit(r) then
+				local part = r.Instance
+				local hitDist = (r.Position - origin).Magnitude
+				closestHit = math.min(closestHit, hitDist)
+
+				if prevPart and part ~= prevPart then
+					local seamY = (prevY + y) * 0.5
+					if math.abs(seamY - feetY) <= getgenv().Wallhop_Config.seamTolerance then
+						if closestHit <= touchDist then
+							return true
+						end
+					end
+				end
+
+				prevPart = part
+				prevY    = y
+			else
+				prevPart, prevY = nil, nil
+			end
+		end
+	end
+
+	return false
+end
+
+-- ============================================================
+-- CARGA DE PERSONAJE
+-- ============================================================
+local function onCharacter(char)
+	if not char then return end
+
+	character = char
+	humanoid  = char:WaitForChild("Humanoid", 5)
+	hrp       = char:WaitForChild("HumanoidRootPart", 5)
+
+	if not humanoid or not hrp then return end
+
+	lastJumpTime = 0
+	pcall(updateRayFilter)
+	task.delay(1, function() pcall(updateRayFilter) end)
+end
+
+track(LocalPlayer.CharacterAdded:Connect(onCharacter))
+
+if LocalPlayer.Character then
+	task.spawn(onCharacter, LocalPlayer.Character)
+end
+
+-- ============================================================
+-- LOOP PRINCIPAL (usa salto ORIGINAL del juego)
+-- ============================================================
+track(RunService.RenderStepped:Connect(function(dt)
+	if not running or not isEnabled then return end
+	if not hrp or not hrp.Parent then return end
+	if not humanoid or not humanoid.Parent then return end
+	if humanoid.Health <= 0 then return end
+
+	if os.clock() - lastJumpTime < getgenv().Wallhop_Config.jumpCooldown then return end
+	if humanoid.FloorMaterial ~= Enum.Material.Air then return end
+
+	local state = humanoid:GetState()
+	if state == Enum.HumanoidStateType.Climbing
+		or state == Enum.HumanoidStateType.Swimming
+		or state == Enum.HumanoidStateType.Dead then
+		return
+	end
+
+	local ok, hasSeam = pcall(findSeam)
+	if not ok or not hasSeam then return end
+
+	lastJumpTime = os.clock()
+
+	-- Guardar velocidad horizontal ANTES de saltar
+	local savedVelX = hrp.AssemblyLinearVelocity.X
+	local savedVelZ = hrp.AssemblyLinearVelocity.Z
+	local boost = getgenv().Wallhop_Config.velocityBoost or 1.0
+
+	-- Saltar con el sistema original de Roblox
+	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+
+	-- Aplicar velocidad horizontal inmediatamente (sin demora)
+	-- La velocidad Y (vertical) se mantiene 100% original del juego
+	if getgenv().Wallhop_Config.preserveVelocity then
+		hrp.AssemblyLinearVelocity = Vector3.new(
+			savedVelX * boost,
+			hrp.AssemblyLinearVelocity.Y,  -- ← SIN MODIFICAR, salto original
+			savedVelZ * boost
+		)
+	end
+end))
+
+-- ============================================================
+-- GUI (sin el input de salto)
+-- ============================================================
+local function createGUI()
+	local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
+	if not PlayerGui then return end
+
+	local oldGUI = PlayerGui:FindFirstChild("Wallhop_GUI")
+	if oldGUI then pcall(function() oldGUI:Destroy() end) end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "Wallhop_GUI"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
+
+	local function makeCorner(parent)
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 6)
+		corner.Parent = parent
+		return corner
+	end
+
+	local MainFrame = Instance.new("Frame")
+	MainFrame.Size = UDim2.new(0, 150, 0, 135)  -- ← tamaño original
+	MainFrame.Position = UDim2.new(0.5, -75, 0.4, 0)
+	MainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+	MainFrame.BorderSizePixel = 0
+	MainFrame.Active = true
+	MainFrame.ClipsDescendants = true
+	makeCorner(MainFrame)
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.Size = UDim2.new(0, 22, 0, 22)
+	closeBtn.Position = UDim2.new(1, -27, 0, 5)
+	closeBtn.Text = "X"
+	closeBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+	closeBtn.TextColor3 = Color3.new(1, 1, 1)
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.TextSize = 12
+	closeBtn.AutoButtonColor = false
+	makeCorner(closeBtn)
+	closeBtn.Parent = MainFrame
+
+	local hideBtn = Instance.new("TextButton")
+	hideBtn.Size = UDim2.new(0, 22, 0, 22)
+	hideBtn.Position = UDim2.new(1, -53, 0, 5)
+	hideBtn.Text = "-"
+	hideBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	hideBtn.TextColor3 = Color3.new(1, 1, 1)
+	hideBtn.Font = Enum.Font.GothamBold
+	hideBtn.TextSize = 14
+	hideBtn.AutoButtonColor = false
+	makeCorner(hideBtn)
+	hideBtn.Parent = MainFrame
+
+	local dragZone = Instance.new("TextButton")
+	dragZone.Size = UDim2.new(1, -60, 0, 30)
+	dragZone.Position = UDim2.new(0, 0, 0, 0)
+	dragZone.BackgroundTransparency = 1
+	dragZone.Text = ""
+	dragZone.AutoButtonColor = false
+	dragZone.Active = true
+	dragZone.Parent = MainFrame
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -60, 0, 30)
+	title.Position = UDim2.new(0, 10, 0, 0)
+	title.Text = "WALLHOP"
+	title.TextColor3 = Color3.fromRGB(0, 255, 255)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 14
+	title.BackgroundTransparency = 1
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = MainFrame
+
+	local Content = Instance.new("Frame")
+	Content.Size = UDim2.new(1, 0, 1, -30)
+	Content.Position = UDim2.new(0, 0, 0, 30)
+	Content.BackgroundTransparency = 1
+	Content.Parent = MainFrame
+
+	local toggleBtn = Instance.new("TextButton")
+	toggleBtn.Size = UDim2.new(0, 130, 0, 34)
+	toggleBtn.Position = UDim2.new(0, 10, 0, 0)
+	toggleBtn.Text = "OFF"
+	toggleBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+	toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+	toggleBtn.Font = Enum.Font.GothamBold
+	toggleBtn.TextSize = 14
+	toggleBtn.AutoButtonColor = false
+	makeCorner(toggleBtn)
+	toggleBtn.Parent = Content
+
+	local speedInput = Instance.new("TextBox")
+	speedInput.Size = UDim2.new(0, 130, 0, 34)
+	speedInput.Position = UDim2.new(0, 10, 0, 40)
+	speedInput.Text = tostring(getgenv().Wallhop_Config.velocityBoost)
+	speedInput.PlaceholderText = "Velocidad"
+	speedInput.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	speedInput.TextColor3 = Color3.fromRGB(0, 255, 255)
+	speedInput.PlaceholderColor3 = Color3.fromRGB(100, 100, 100)
+	speedInput.Font = Enum.Font.GothamBold
+	speedInput.TextSize = 13
+	speedInput.ClearTextOnFocus = false
+	makeCorner(speedInput)
+	speedInput.Parent = Content
+
+	MainFrame.Parent = screenGui
+	screenGui.Parent = PlayerGui
+
+	-- ============================================================
+	-- ARRASTRE
+	-- ============================================================
+	local dragging, dragStart, startPos = false, nil, nil
+
+	dragZone.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = MainFrame.Position
+		end
+	end)
+
+	UserInput.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+			local delta = input.Position - dragStart
+			MainFrame.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+
+	UserInput.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	-- ============================================================
+	-- EVENTOS
+	-- ============================================================
+	local function refreshToggle()
+		if isEnabled then
+			toggleBtn.Text = "ON"
+			toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 220, 120)
+			toggleBtn.TextColor3 = Color3.new(0, 0, 0)
+		else
+			toggleBtn.Text = "OFF"
+			toggleBtn.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+			toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+		end
+	end
+
+	toggleBtn.MouseButton1Click:Connect(function()
+		isEnabled = not isEnabled
+		getgenv().Wallhop_Config.autoWallHop = isEnabled
+		refreshToggle()
+	end)
+
+	speedInput:GetPropertyChangedSignal("Text"):Connect(function()
+		local filtered = speedInput.Text:gsub("[^%d%.]", "")
+		if filtered ~= speedInput.Text then
+			speedInput.Text = filtered
+		end
+	end)
+
+	speedInput.FocusLost:Connect(function()
+		local val = tonumber(speedInput.Text)
+		if val and val > 0 then
+			getgenv().Wallhop_Config.velocityBoost = val
+		else
+			speedInput.Text = tostring(getgenv().Wallhop_Config.velocityBoost)
+		end
+	end)
+
+	hideBtn.MouseButton1Click:Connect(function()
+		isMinimized = not isMinimized
+		Content.Visible = not isMinimized
+		MainFrame:TweenSize(
+			isMinimized and UDim2.new(0, 150, 0, 30) or UDim2.new(0, 150, 0, 135),
+			Enum.EasingDirection.Out,
+			Enum.EasingStyle.Quart,
+			0.1,
+			true
+		)
+		hideBtn.Text = isMinimized and "+" or "-"
+	end)
+
+	closeBtn.MouseButton1Click:Connect(function()
+		running = false
+		for _, c in ipairs(connections) do
+			pcall(function() c:Disconnect() end)
+		end
+		connections = {}
+		pcall(function() getgenv().Wallhop_Config = nil end)
+		pcall(function() screenGui:Destroy() end)
+	end)
+end
+
+task.spawn(function()
+	pcall(createGUI)
+end)
+1

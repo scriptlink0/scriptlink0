@@ -1,0 +1,304 @@
+local player = game.Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local UIS = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+
+local gui = Instance.new("ScreenGui")
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999999
+gui.IgnoreGuiInset = true
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- Contenedor Principal
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 170, 0, 85)
+frame.Position = UDim2.new(0, 40, 0, 40)
+frame.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+frame.Active = true
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+
+local frameStroke = Instance.new("UIStroke", frame)
+frameStroke.Thickness = 1.5
+frameStroke.Color = Color3.fromRGB(45, 50, 70)
+
+-- Título superior "Auto HM"
+local titleBar = Instance.new("TextLabel")
+titleBar.Size = UDim2.new(1, -65, 0, 24)
+titleBar.Position = UDim2.new(0, 8, 0, 6)
+titleBar.BackgroundTransparency = 1
+titleBar.Text = "⚡ Auto HM"
+titleBar.TextColor3 = Color3.fromRGB(240, 240, 255)
+titleBar.TextSize = 13
+titleBar.Font = Enum.Font.GothamBold
+titleBar.TextXAlignment = Enum.TextXAlignment.Left
+titleBar.Parent = frame
+
+-- Contenedor ordenado para los botones (+) y (X)
+local topButtonsFrame = Instance.new("Frame")
+topButtonsFrame.Size = UDim2.new(0, 52, 0, 20)
+topButtonsFrame.Position = UDim2.new(1, -56, 0, 8)
+topButtonsFrame.BackgroundTransparency = 1
+topButtonsFrame.ZIndex = 5
+topButtonsFrame.Parent = frame
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 22, 0, 20)
+minBtn.Position = UDim2.new(0, 0, 0, 0)
+minBtn.BackgroundColor3 = Color3.fromRGB(55, 60, 80)
+minBtn.Text = "+"
+minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minBtn.TextSize = 14
+minBtn.Font = Enum.Font.GothamBold
+minBtn.BorderSizePixel = 0
+minBtn.ZIndex = 6
+minBtn.Parent = topButtonsFrame
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 22, 0, 20)
+closeBtn.Position = UDim2.new(0, 28, 0, 0)
+closeBtn.BackgroundColor3 = Color3.fromRGB(210, 45, 65)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 12
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.BorderSizePixel = 0
+closeBtn.ZIndex = 6
+closeBtn.Parent = topButtonsFrame
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Botón principal Activar / Desactivar
+local button = Instance.new("TextButton")
+button.Size = UDim2.new(1, -16, 0, 38)
+button.Position = UDim2.new(0, 8, 0, 38)
+button.BackgroundColor3 = Color3.fromRGB(210, 45, 65)
+button.Text = "Activar"
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.TextSize = 14
+button.Font = Enum.Font.GothamBold
+button.BorderSizePixel = 0
+button.Parent = frame
+
+Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
+
+local btnGrad = Instance.new("UIGradient", button)
+btnGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(235, 60, 85)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(160, 25, 45)),
+})
+btnGrad.Rotation = 90
+
+-- Sistema de Arrastre
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		minBtn.Text = "-"
+		TweenService:Create(frame, TweenInfo.new(0.2), {Size = UDim2.new(0, 170, 0, 36)}):Play()
+		button.Visible = false
+	else
+		minBtn.Text = "+"
+		TweenService:Create(frame, TweenInfo.new(0.2), {Size = UDim2.new(0, 170, 0, 85)}):Play()
+		button.Visible = true
+	end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+	gui:Destroy()
+end)
+
+local enabled = false
+
+local function setEnabled(state)
+	enabled = state
+	if enabled then
+		button.Text = "Desactivar"
+		TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(40, 180, 90)}):Play()
+		btnGrad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 210, 105)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(20, 110, 50)),
+		})
+	else
+		button.Text = "Activar"
+		TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(210, 45, 65)}):Play()
+		btnGrad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(235, 60, 85)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(160, 25, 45)),
+		})
+	end
+end
+
+button.MouseButton1Click:Connect(function()
+	setEnabled(not enabled)
+end)
+
+local currentTarget = nil
+
+local function isTeammate(otherPlayer)
+	if otherPlayer == player then return true end
+	if player.Team and otherPlayer.Team and player.Team == otherPlayer.Team then return true end
+	if otherPlayer:GetAttribute("Team") and player:GetAttribute("Team") and otherPlayer:GetAttribute("Team") == player:GetAttribute("Team") then return true end
+	if otherPlayer.TeamColor and player.TeamColor and otherPlayer.TeamColor == player.TeamColor then return true end
+	return false
+end
+
+-- Raycast ESTRICTO para detectar paredes y coberturas
+local function hasLineOfSight(fromPos, toPos, characterToIgnore)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = {player.Character, characterToIgnore}
+	raycastParams.IgnoreWater = true
+	
+	local direction = toPos - fromPos
+	local result = Workspace:Raycast(fromPos, direction, raycastParams)
+	
+	if result then
+		local hitPart = result.Instance
+		if not hitPart:IsDescendantOf(characterToIgnore) then
+			return false -- Bloqueado por pared
+		end
+	end
+	
+	return true
+end
+
+-- Búsqueda ultra rápida
+task.spawn(function()
+	while gui.Parent do
+		task.wait(0.05) 
+		if not enabled then
+			currentTarget = nil
+			continue
+		end
+
+		local char = player.Character
+		if not char then continue end
+		
+		local tool = char:FindFirstChildOfClass("Tool")
+		if not tool then
+			currentTarget = nil
+			continue
+		end
+
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if not root then continue end
+
+		local myPos = root.Position + Vector3.new(0, 2, 0)
+		local maxRange = 150
+		local bestTarget = nil
+		local bestDist = math.huge
+
+		-- 1. Buscar Jugadores Enemigos
+		for _, v in ipairs(Players:GetPlayers()) do
+			if not isTeammate(v) and v.Character then
+				local tr = v.Character:FindFirstChild("HumanoidRootPart")
+				local hum = v.Character:FindFirstChild("Humanoid")
+				
+				if tr and hum and hum.Health > 0 then
+					local dist = (myPos - tr.Position).Magnitude
+					if dist <= maxRange and math.abs(myPos.Y - tr.Position.Y) < 40 then
+						if hasLineOfSight(myPos, tr.Position + Vector3.new(0, 2, 0), v.Character) then
+							if dist < bestDist then
+								bestDist = dist
+								bestTarget = tr
+							end
+						end
+					end
+				end
+			end
+		end
+
+		-- 2. Buscar NPCs / Bots
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("Model") and obj ~= char and not Players:GetPlayerFromCharacter(obj) then
+				local hum = obj:FindFirstChildOfClass("Humanoid")
+				local tr = obj:FindFirstChild("HumanoidRootPart")
+				
+				local isAllyNpc = false
+				if obj:GetAttribute("Team") and player:GetAttribute("Team") and obj:GetAttribute("Team") == player:GetAttribute("Team") then
+					isAllyNpc = true
+				end
+				
+				if not isAllyNpc and hum and tr and hum.Health > 0 then
+					local dist = (myPos - tr.Position).Magnitude
+					if dist <= maxRange and math.abs(myPos.Y - tr.Position.Y) < 40 then
+						if hasLineOfSight(myPos, tr.Position + Vector3.new(0, 2, 0), obj) then
+							if dist < bestDist then
+								bestDist = dist
+								bestTarget = tr
+							end
+						end
+					end
+				end
+			end
+		end
+
+		currentTarget = bestTarget
+	end
+end)
+
+-- Movimiento Anti-Congelamiento Absoluto
+RunService.RenderStepped:Connect(function()
+	if not gui.Parent or not enabled then return end
+
+	local char = player.Character
+	if not char then return end
+	
+	local hum = char:FindFirstChild("Humanoid")
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local tool = char:FindFirstChildOfClass("Tool")
+	
+	if not hum or not root or not tool then return end
+
+	if currentTarget and currentTarget.Parent then
+		local targetModel = currentTarget.Parent
+		local targetHum = targetModel:FindFirstChildOfClass("Humanoid")
+		
+		-- Si el objetivo muere, desaparece o se esconde, liberamos el movimiento al instante
+		if not targetHum or targetHum.Health <= 0 or not currentTarget.Parent then
+			currentTarget = nil
+			return
+		end
+
+		local targetPos = currentTarget.Position
+		
+		-- Doble comprobación: si se escondió de golpe, se borra el objetivo para que no se congele
+		if not hasLineOfSight(root.Position + Vector3.new(0, 2, 0), targetPos + Vector3.new(0, 2, 0), targetModel) then
+			currentTarget = nil
+			return
+		end
+
+		local heightDifference = root.Position.Y - targetPos.Y
+		local horizontalDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
+
+		if heightDifference > 3.5 and horizontalDist < 3 then
+			local safePos = targetPos + Vector3.new(3, 0, 3)
+			hum:MoveTo(safePos)
+		else
+			hum:MoveTo(targetPos)
+		end
+	end
+end)
